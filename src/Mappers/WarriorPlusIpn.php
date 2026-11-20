@@ -14,8 +14,15 @@ use Illuminate\Database\Eloquent\Model;
  * (subscr_completed) is its own payment; a refund points back at its sale.
  * The IPN has no time of its own, so the row's created_at is when it happened.
  *
+ * Only IPNs that carry the app's WarriorPlus security key count. Apps often store every IPN before
+ * checking it, so a forged or rejected IPN is a row too, and must not become revenue. The key is
+ * `security_key` below, else the app's own `services.warriorplus.security_key`. A key that is set
+ * but empty matches nothing (the app rejects every IPN too). With no key configured anywhere, the
+ * IPN is not checked.
+ *
  * Options, under 'warriorplus' in the model's mapping:
  *   'plan' => ['lookup' => Plan::class, 'by' => 'wplus_code']   matched against WP_ITEM_NUMBER
+ *   'security_key' => env('WARRIORPLUS_SECURITYKEY')           default: config('services.warriorplus.security_key')
  */
 class WarriorPlusIpn extends StoredWebhook
 {
@@ -27,7 +34,7 @@ class WarriorPlusIpn extends StoredWebhook
     {
         $ipn = $this->body($model, $mapping);
 
-        if (! isset($ipn['WP_ACTION'])) {
+        if (! isset($ipn['WP_ACTION']) || ! $this->authentic($ipn, (array) ($mapping['warriorplus'] ?? []))) {
             return null;
         }
 
@@ -66,5 +73,26 @@ class WarriorPlusIpn extends StoredWebhook
                 'product_id' => $ipn['WP_ITEM_NUMBER'] ?? null,
             ], fn (mixed $v): bool => $v !== null),
         ]);
+    }
+
+    /**
+     * Whether the stored IPN carries the app's security key.
+     *
+     * @param  array<string, mixed>  $ipn
+     * @param  array<string, mixed>  $options
+     */
+    private function authentic(array $ipn, array $options): bool
+    {
+        $expected = array_key_exists('security_key', $options)
+            ? $options['security_key']
+            : config('services.warriorplus.security_key');
+
+        if ($expected === null) {
+            return true;
+        }
+
+        $given = $ipn['WP_SECURITYKEY'] ?? null;
+
+        return (string) $expected !== '' && is_string($given) && hash_equals((string) $expected, $given);
     }
 }

@@ -187,4 +187,24 @@ class PaymentsTest extends TestCase
 
         $this->assertSame([], $this->record(Hook::create(['payload' => ['WP_ACTION' => 'subscr_cancelled', 'WP_SALE' => 'S1', 'WP_BUYER_EMAIL' => 'buyer@example.com']])));
     }
+
+    public function test_only_warriorplus_ipns_with_the_apps_security_key_become_payments(): void
+    {
+        $ipn = fn (array $extra) => Hook::create(['payload' => ['WP_ACTION' => 'sale', 'WP_SALE' => 'S'.uniqid(), 'WP_SALE_AMOUNT' => '19.00', 'WP_BUYER_EMAIL' => 'buyer@example.com', ...$extra]]);
+
+        // The app's own key (services.warriorplus.security_key), as the app checks it.
+        config(['services.warriorplus.security_key' => 'wp-secret']);
+        $this->assertSame('paid', $this->record($ipn(['WP_SECURITYKEY' => 'wp-secret']))['status']);
+        $this->assertSame([], $this->record($ipn(['WP_SECURITYKEY' => 'forged'])), 'a wrong key is a forged or rejected IPN');
+        $this->assertSame([], $this->record($ipn([])), 'no key at all');
+
+        // Set but empty: the app rejects every IPN, so nothing counts.
+        config(['services.warriorplus.security_key' => '']);
+        $this->assertSame([], $this->record($ipn(['WP_SECURITYKEY' => ''])));
+
+        // The mapping's own key wins over the app's.
+        $this->app['config']->set('engagehub.sync.models.'.Hook::class.'.warriorplus.security_key', 'mapping-key');
+        $this->assertSame('paid', $this->record($ipn(['WP_SECURITYKEY' => 'mapping-key']))['status']);
+        $this->assertSame([], $this->record($ipn(['WP_SECURITYKEY' => 'wp-secret'])));
+    }
 }
