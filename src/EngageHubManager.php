@@ -3,8 +3,11 @@
 namespace EngageHub\Laravel;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use EngageHub\Dto\ItemResult;
+use EngageHub\Laravel\Contracts\RecordMapper;
 use EngageHub\Laravel\Jobs\DeleteContactFromEngageHub;
 use EngageHub\Laravel\Jobs\DeleteRecordFromEngageHub;
 use EngageHub\Laravel\Jobs\SyncContactToEngageHub;
@@ -161,7 +164,14 @@ class EngageHubManager
             return;
         }
 
-        $this->dispatchRecord($kind, $this->recordPayload($model));
+        $payload = $this->recordPayload($model);
+
+        // Not a record (a webhook that moved no money, a payment with no amount).
+        if (($payload['external_id'] ?? '') === '') {
+            return;
+        }
+
+        $this->dispatchRecord($kind, $payload);
     }
 
     /**
@@ -263,7 +273,70 @@ class EngageHubManager
             return $model->toEngageHubRecord();
         }
 
-        return $this->mappedRecord($model, $this->mappingFor($model::class) ?? [], $kind);
+        $mapping = $this->mappingFor($model::class) ?? [];
+
+        if (isset($mapping['using'])) {
+            return $this->mapWith($model, $mapping);
+        }
+
+        $payload = $this->mappedRecord($model, $mapping, $kind);
+
+        // A payment whose amount is unknown is not sent: nothing is estimated.
+        return $kind === 'payment' && ! isset($payload['amount_cents']) ? [] : $payload;
+    }
+
+    /**
+     * 'using' => mapper class(es) for rows that need more than a column map
+     * (a stored webhook body, ...). The first mapper that recognises the row
+     * wins; a row none recognises is not a record and is not sent.
+     *
+     * @param  array<string, mixed>  $mapping
+     * @return array<string, mixed>
+     */
+    private function mapWith(Model $model, array $mapping): array
+    {
+        foreach ((array) $mapping['using'] as $class) {
+            $mapper = app($class);
+
+            if (! $mapper instanceof RecordMapper) {
+                throw new InvalidArgumentException("{$class} must implement ".RecordMapper::class.'.');
+            }
+
+            if (($record = $mapper->map($model, $mapping, $this)) !== null) {
+                return $record;
+            }
+        }
+
+        return [];
+    }
+
+    /** The row of $class whose $by column holds $value, for mappers and lookups. */
+    public function lookup(string $class, string $by, mixed $value): ?Model
+    {
+        if ($value === null || $value === '' || ! is_a($class, Model::class, true)) {
+            return null;
+        }
+
+        return $class::query()->where($by, $value)->first();
+    }
+
+    /** The EngageHub external id of a synced model (per its own mapping), or null. */
+    public function externalIdOf(?Model $model): ?string
+    {
+        $id = $model !== null ? ($this->recordPayload($model)['external_id'] ?? null) : null;
+
+        return $id === null || $id === '' ? null : (string) $id;
+    }
+
+    /**
+     * Resolve a ['lookup' => Model::class, 'by' => column] option against a
+     * value from elsewhere (a webhook body): the matching row's external id.
+     *
+     * @param  array<string, mixed>|null  $option
+     */
+    public function resolve(?array $option, mixed $value): ?string
+    {
+        return isset($option['lookup'], $option['by']) ? $this->externalIdOf($this->lookup($option['lookup'], $option['by'], $value)) : null;
     }
 
     /**
@@ -288,10 +361,88 @@ class EngageHubManager
     }
 
     /**
+     * The external id a reference points at: an attribute holding it, or a
+     * lookup (['from' => column here, 'lookup' => Model::class, 'by' => column
+     * there]) that finds the related row and uses its EngageHub external id.
+     */
+    private function reference(Model $model, mixed $ref): ?string
+    {
+        if (is_string($ref)) {
+            $value = $model->getAttribute($ref);
+
+            return $value === null || $value === '' ? null : (string) $value;
+        }
+
+        if (! is_array($ref) || ! isset($ref['from'], $ref['lookup']) || ! is_a($ref['lookup'], Model::class, true)) {
+            throw new InvalidArgumentException('A reference is an attribute name or [\'from\' => ..., \'lookup\' => Model::class, \'by\' => ...].');
+        }
+
+        $value = $model->getAttribute($ref['from']);
+
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return $this->externalIdOf($this->lookup($ref['lookup'], $ref['by'] ?? $ref['from'], $value));
+    }
+
+    /**
+     * A map source: an attribute, a path through relations ("plan.amount"),
+     * and optional pipes: "plan.amount|cents|divide:4".
+     *   cents      a decimal amount (19.99) to cents (1999)
+     *   divide:n   split by n (an order that paid for n apps), rounded
+     *   multiply:n
+     *   prefix:x   put x in front ("order_id|prefix:darkcore_")
+     *   upper, lower
+     *
+     * @param  array<string, mixed>  $values  your value => EngageHub's, applied before the pipes
+     */
+    private function value(Model $model, string $source, array $values = []): mixed
+    {
+        $pipes = explode('|', $source);
+        $path = (string) array_shift($pipes);
+        $value = str_contains($path, '.') ? data_get($model, $path) : $model->getAttribute($path);
+
+        if ($value instanceof \DateTimeInterface) {
+            $value = $value->format(\DateTimeInterface::ATOM);
+        } elseif ($value instanceof \BackedEnum) {
+            $value = $value->value;
+        }
+
+        if (is_scalar($value) && isset($values[(string) $value])) {
+            $value = $values[(string) $value];
+        }
+
+        foreach ($pipes as $pipe) {
+            if ($value === null) {
+                break;
+            }
+
+            [$name, $argument] = explode(':', $pipe, 2) + [1 => null];
+
+            $value = match ($name) {
+                'cents' => is_numeric($value) ? (int) round(((float) $value) * 100) : $value,
+                'divide' => is_numeric($value) && is_numeric($argument) && (float) $argument != 0.0 ? (int) round(((float) $value) / (float) $argument) : $value,
+                'multiply' => is_numeric($value) && is_numeric($argument) ? (int) round(((float) $value) * (float) $argument) : $value,
+                'prefix' => $argument.$value,
+                'upper' => is_string($value) ? strtoupper($value) : $value,
+                'lower' => is_string($value) ? strtolower($value) : $value,
+                default => throw new InvalidArgumentException("Unknown pipe \"{$name}\" in \"{$source}\". Pipes: cents, divide:n, multiply:n, prefix:x, upper, lower."),
+            };
+        }
+
+        return $value;
+    }
+
+    /**
      * Config mapping for plans, subscriptions and objects:
      *   'external_id' => 'id', 'map' => [engagehub field => attribute],
      *   'values' => [engagehub field => [your value => engagehub value]],
      *   'contact' => attribute holding the user's id, 'plan' => attribute holding the plan's id,
+     *   'defaults' => [engagehub field => fixed value] for fields with no column,
+     *   map sources may follow relations and take pipes: 'plan.amount|cents|divide:4',
+     *   or a lookup when the model points at it by another column:
+     *   'plan' => ['from' => 'variant_id', 'lookup' => Plan::class, 'by' => 'variant_id'],
      *   'attributes' => [attribute, ...]
      *
      * @param  array<string, mixed>  $mapping
@@ -299,34 +450,33 @@ class EngageHubManager
      */
     private function mappedRecord(Model $model, array $mapping, string $kind): array
     {
-        $payload = ['external_id' => (string) $model->getAttribute($mapping['external_id'] ?? $model->getKeyName())];
+        $payload = ['external_id' => (string) $this->value($model, $mapping['external_id'] ?? $model->getKeyName())];
 
-        foreach ($mapping['map'] ?? [] as $field => $attribute) {
-            $value = $model->getAttribute($attribute);
-
-            if ($value instanceof \DateTimeInterface) {
-                $value = $value->format(\DateTimeInterface::ATOM);
-            } elseif ($value instanceof \BackedEnum) {
-                $value = $value->value;
-            }
-
-            if (is_scalar($value) && isset($mapping['values'][$field][(string) $value])) {
-                $value = $mapping['values'][$field][(string) $value];
-            }
-
-            $payload[$field] = $value;
+        foreach ($mapping['map'] ?? [] as $field => $source) {
+            $payload[$field] = $this->value($model, $source, (array) ($mapping['values'][$field] ?? []));
         }
 
-        if (isset($mapping['contact']) && ($owner = $model->getAttribute($mapping['contact'])) !== null) {
-            $payload['contact'] = ['external_id' => (string) $owner];
+        // 'defaults' => fixed values for fields the table has no column for (a currency, ...).
+        foreach ((array) ($mapping['defaults'] ?? []) as $field => $default) {
+            $payload[$field] ??= $default;
         }
 
-        if (in_array($kind, ['subscription', 'payment'], true) && isset($mapping['plan']) && ($plan = $model->getAttribute($mapping['plan'])) !== null) {
-            $payload['plan'] = ['external_id' => (string) $plan];
+        // A payment says its status by its dates unless 'status' is mapped:
+        // refunded once it has a refund date, paid otherwise.
+        if ($kind === 'payment' && ! isset($payload['status'])) {
+            $payload['status'] = empty($payload['refunded_at']) ? 'paid' : 'refunded';
         }
 
-        if ($kind === 'payment' && isset($mapping['subscription']) && ($subscription = $model->getAttribute($mapping['subscription'])) !== null) {
-            $payload['subscription'] = ['external_id' => (string) $subscription];
+        if (isset($mapping['contact']) && ($owner = $this->reference($model, $mapping['contact'])) !== null) {
+            $payload['contact'] = ['external_id' => $owner];
+        }
+
+        if (in_array($kind, ['subscription', 'payment'], true) && isset($mapping['plan']) && ($plan = $this->reference($model, $mapping['plan'])) !== null) {
+            $payload['plan'] = ['external_id' => $plan];
+        }
+
+        if ($kind === 'payment' && isset($mapping['subscription']) && ($subscription = $this->reference($model, $mapping['subscription'])) !== null) {
+            $payload['subscription'] = ['external_id' => $subscription];
         }
 
         foreach ($mapping['attributes'] ?? [] as $attribute) {
@@ -340,6 +490,58 @@ class EngageHubManager
         $timestamps = $this->timestamps($model);
 
         return $payload + (in_array($kind, ['subscription', 'payment'], true) ? array_intersect_key($timestamps, ['updated_at' => true]) : $timestamps);
+    }
+
+    /**
+     * The meters in engagehub.sync.meters, as EngageHub takes them.
+     *
+     * @return list<array{used: string, limit: string|null, label: string}>
+     */
+    public function meters(): array
+    {
+        $meters = [];
+
+        foreach ((array) config('engagehub.sync.meters', []) as $name => $meter) {
+            $meter = is_string($meter) ? ['used' => $meter] : (array) $meter;
+
+            if (! isset($meter['used']) || ! is_string($meter['used']) || $meter['used'] === '') {
+                throw new InvalidArgumentException("engagehub.sync.meters.{$name} needs 'used': the attribute counting usage.");
+            }
+
+            $meters[] = [
+                'used' => $meter['used'],
+                'limit' => isset($meter['limit']) && is_string($meter['limit']) && $meter['limit'] !== '' ? $meter['limit'] : null,
+                'label' => (string) ($meter['label'] ?? Str::headline((string) $name)),
+            ];
+        }
+
+        return $meters;
+    }
+
+    /**
+     * Send the app's schema (meters) to EngageHub when it changed since the
+     * last send, or always with $force. An app that never declared anything
+     * sends nothing. Returns whether it was sent.
+     */
+    public function describe(bool $force = false): bool
+    {
+        if (! $this->enabled()) {
+            return false;
+        }
+
+        $meters = $this->meters();
+        $hash = sha1((string) json_encode($meters));
+        $key = 'engagehub:schema:'.substr(sha1((string) config('engagehub.api_key').'|'.config('engagehub.base_url')), 0, 16);
+        $sent = Cache::get($key);
+
+        if (($sent === null && $meters === []) || (! $force && $sent === $hash)) {
+            return false;
+        }
+
+        $this->client->describe(['meters' => $meters]);
+        Cache::forever($key, $hash);
+
+        return true;
     }
 
     /**
@@ -417,15 +619,25 @@ class EngageHubManager
     {
         $mapping = $this->mappingFor($model::class);
 
+        // A mapper reads what it likes: any change counts.
+        if ($mapping !== null && isset($mapping['using'])) {
+            return null;
+        }
+
         if ($mapping !== null) {
+            // "plan.amount|cents" watches nothing here (it is the plan's); "amount|cents" watches amount.
+            $column = fn (string $source): ?string => str_contains($path = explode('|', $source)[0], '.') ? null : $path;
+
             return array_values(array_unique(array_filter([
-                $mapping['external_id'] ?? $model->getKeyName(),
-                ...array_values($mapping['map'] ?? []),
+                $column($mapping['external_id'] ?? $model->getKeyName()),
+                ...array_map($column, array_values($mapping['map'] ?? [])),
                 ...($mapping['attributes'] ?? []),
                 // Columns behind engageHubContactExtras(), so changing them syncs too.
                 ...($mapping['watch'] ?? []),
-                $mapping['contact'] ?? null,
-                $mapping['plan'] ?? null,
+                ...array_map(
+                    fn (mixed $ref) => is_array($ref) ? ($ref['from'] ?? null) : $ref,
+                    array_values(array_intersect_key($mapping, array_flip(['contact', 'plan', 'subscription']))),
+                ),
             ])));
         }
 

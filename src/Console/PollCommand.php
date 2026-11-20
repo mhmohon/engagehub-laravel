@@ -35,20 +35,29 @@ class PollCommand extends Command
         }
 
         if (! $this->option('watch')) {
-            return $this->pollOnce($client);
+            return $this->pollOnce($engagehub, $client);
         }
 
         $interval = max(5, (int) $this->option('interval'));
         $this->info("Polling EngageHub every {$interval}s. Ctrl+C to stop.");
 
         while (true) { // @phpstan-ignore while.alwaysTrue
-            $this->pollOnce($client);
+            $this->pollOnce($engagehub, $client);
             sleep($interval);
         }
     }
 
-    private function pollOnce(EngageHubClient $client): int
+    private function pollOnce(EngageHubManager $engagehub, EngageHubClient $client): int
     {
+        try {
+            // Meters changed in config since the last send: tell EngageHub.
+            if ($engagehub->describe()) {
+                $this->line('Sent meters to EngageHub.', verbosity: 'v');
+            }
+        } catch (Throwable $e) {
+            $this->warn('Could not send meters to EngageHub: '.$e->getMessage());
+        }
+
         try {
             $command = $client->connection()['pending_command'] ?? null;
         } catch (Throwable $e) {

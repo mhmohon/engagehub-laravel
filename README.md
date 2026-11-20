@@ -89,6 +89,88 @@ Either way: `created`/`updated` push the contact (queued by default, with `creat
 'models' => [App\Models\User::class],
 ```
 
+## Plans, subscriptions and payments, from config alone
+
+Apps differ: some have plans, some sell one-off bundles, some log billing webhooks instead of keeping a payments
+table. Register only what your app has; every entry is config, so nothing in the app's own code changes.
+
+```php
+'models' => [
+    // A plan. Sources can take pipes: the price is stored in dollars here.
+    App\Models\Plan::class => [
+        'as' => 'plan',
+        'map' => ['name' => 'name', 'amount_cents' => 'amount|cents', 'interval' => 'type'],
+        'values' => ['interval' => ['monthly' => 'month', 'yearly' => 'year']],
+    ],
+
+    // A subscription that points at its plan by another column: a lookup finds the plan.
+    LemonSqueezy\Laravel\Subscription::class => [
+        'as' => 'subscription',
+        'contact' => 'billable_id',
+        'plan' => ['from' => 'variant_id', 'lookup' => App\Models\Plan::class, 'by' => 'variant_id'],
+        'map' => ['status' => 'status', 'current_period_ends_at' => 'renews_at'],
+        'values' => ['status' => ['on_trial' => 'trialing']],
+    ],
+
+    // A payment whose price lives on a related row, shared between 4 products.
+    App\Models\BundleGrant::class => [
+        'as' => 'payment',
+        'external_id' => 'order_id|prefix:bundle_',
+        'contact' => 'user_id',
+        'plan' => 'plan_id',
+        'map' => ['amount_cents' => 'plan.amount|cents|divide:4', 'paid_at' => 'created_at', 'refunded_at' => 'revoked_at'],
+        'defaults' => ['currency' => 'USD'],
+    ],
+
+    // Payments from a table of stored billing webhooks: the package's mappers read the bodies.
+    App\Models\Webhook::class => [
+        'as' => 'payment',
+        'using' => [EngageHub\Laravel\Mappers\LemonSqueezyWebhook::class, EngageHub\Laravel\Mappers\WarriorPlusIpn::class],
+        'payload' => 'payload',  // column holding the body
+        'contact' => 'user_id',  // column holding your user's id, if the table has one
+        'lemonsqueezy' => [
+            'plan' => ['lookup' => App\Models\Plan::class, 'by' => 'variant_id'],
+            'subscription' => ['lookup' => LemonSqueezy\Laravel\Subscription::class, 'by' => 'lemon_squeezy_id'],
+        ],
+        'warriorplus' => ['plan' => ['lookup' => App\Models\Plan::class, 'by' => 'wplus_code']],
+    ],
+],
+```
+
+| Key | What it does |
+| --- | --- |
+| `map` | EngageHub field => source. A source is a column, a path through relations (`plan.amount`), and optional pipes. |
+| pipes | `cents` (19.99 → 1999), `divide:n`, `multiply:n`, `prefix:x`, `upper`, `lower`. Also allowed on `external_id`. |
+| `values` | Your value => EngageHub's, per field (statuses, intervals). |
+| `defaults` | Fixed values for fields the table has no column for (`currency`). |
+| `contact`, `plan`, `subscription` | The column holding the other record's id, or a lookup: `['from' => column here, 'lookup' => Model::class, 'by' => column there]`. |
+| `using` | Mapper class(es) for rows a column map cannot describe. The first that recognises the row wins. |
+
+Payments: without a mapped `status`, a payment is `refunded` once `refunded_at` has a value and `paid` otherwise. A
+payment with no amount is not sent, and a stored webhook that moved no money (or is in test mode) is skipped: nothing
+is estimated. Payments are never deleted; a refund updates the same payment.
+
+The mappers: `LemonSqueezyWebhook` counts an order as the first purchase and each renewal invoice as its own payment
+(the "initial" invoice is the same money as its order); `WarriorPlusIpn` uses the same ids as EngageHub's WarriorPlus
+sales webhook, so a sale that arrives both ways counts once. Write your own by implementing
+`EngageHub\Laravel\Contracts\RecordMapper`.
+
+## Meters (optional)
+
+If people use something up in your app (credits, minutes, exports), say which attributes hold it, so EngageHub
+shows usage and who is running out. Skip this if your app has nothing like it: EngageHub never guesses.
+
+```php
+// config/engagehub.php → 'sync'
+'meters' => [
+    'credits' => ['used' => 'credits_used', 'limit' => 'credits'], // used out of an allowance
+    'exports' => ['used' => 'exports_count'],                     // no cap
+],
+```
+
+The attributes must be ones a contact mapping already sends. `engagehub:sync` sends the meters; after that,
+`engagehub:poll` sends them again only when the list changes.
+
 ## Backfill existing data
 
 ```bash

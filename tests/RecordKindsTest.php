@@ -89,6 +89,23 @@ class RecordKindsTest extends TestCase
         });
     }
 
+    public function test_a_reference_can_be_a_lookup_by_another_column(): void
+    {
+        Queue::fake();
+        // The plan is known in EngageHub by its title; the membership points at it by a price code.
+        config()->set('engagehub.sync.models.'.Package::class.'.external_id', 'title');
+        config()->set('engagehub.sync.models.'.Membership::class.'.plan', ['from' => 'state', 'lookup' => Package::class, 'by' => 'title']);
+
+        Package::create(['title' => 'gold', 'price_cents' => 900]);
+        Membership::create(['member_id' => 42, 'state' => 'gold']);
+        Membership::create(['member_id' => 43, 'state' => 'unknown']);
+
+        Queue::assertPushed(SyncRecordToEngageHub::class, fn ($job) => $job->kind === 'subscription'
+            && $job->record['contact'] === ['external_id' => '42'] && $job->record['plan'] === ['external_id' => 'gold']);
+        Queue::assertPushed(SyncRecordToEngageHub::class, fn ($job) => $job->kind === 'subscription'
+            && $job->record['contact'] === ['external_id' => '43'] && ! isset($job->record['plan']));
+    }
+
     public function test_objects_and_plans_go_to_their_endpoints_inline(): void
     {
         config(['engagehub.dispatch' => 'sync']);

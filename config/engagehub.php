@@ -128,7 +128,33 @@ return [
         |
         | Both register the observer (created/updated/deleted) and make the
         | model part of the engagehub:sync backfill.
+        |
+        | Plans, subscriptions, payments and objects are config mappings too
+        | ('as' => 'plan' | 'subscription' | 'payment' | 'object:<type>'): register
+        | only what your app has. Sources follow relations and take pipes
+        | ('plan.amount|cents|divide:4'), references can be lookups, 'defaults'
+        | sets fixed values, and 'using' names a mapper for stored billing
+        | webhooks (Lemon Squeezy, WarriorPlus). See the README.
         */
         'models' => [],
+
+        /*
+        |----------------------------------------------------------------------
+        | Meters (optional)
+        |----------------------------------------------------------------------
+        | Things people use up, from contact attributes you already send. Each
+        | meter names the attribute counting usage and, if there is a cap, the
+        | one holding each person's allowance. EngageHub's group page then shows
+        | how much is used and who is running out. Leave empty if your app has
+        | nothing like this; EngageHub never guesses from attribute names.
+        |
+        |    'credits' => ['used' => 'credits_used', 'limit' => 'credits'],
+        |    'exports' => ['used' => 'exports_count'],          // no cap
+        |    'minutes' => ['used' => 'minutes_used', 'limit' => 'minutes_quota', 'label' => 'Video minutes'],
+        |
+        | Sent to EngageHub by engagehub:sync and, when this list changes, by the
+        | scheduled engagehub:poll.
+        */
+        'meters' => [],
     ],
 ];

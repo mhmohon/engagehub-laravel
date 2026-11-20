@@ -3,6 +3,7 @@
 namespace EngageHub\Laravel\Console;
 
 use Illuminate\Console\Command;
+use Throwable;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use EngageHub\Dto\SyncResult;
@@ -64,6 +65,16 @@ class SyncCommand extends Command
             }
         }
 
+        if (! $this->option('dry-run')) {
+            try {
+                if ($engagehub->describe(force: true)) {
+                    $this->line('Sent '.count($engagehub->meters()).' meter(s) to EngageHub.');
+                }
+            } catch (Throwable $e) {
+                $this->warn('Could not send meters to EngageHub: '.$e->getMessage());
+            }
+        }
+
         // Plans and people before what refers to them.
         usort($models, fn (string $a, string $b) => $this->rank($engagehub, $a) <=> $this->rank($engagehub, $b));
 
@@ -120,6 +131,8 @@ class SyncCommand extends Command
             $payloads = $rows
                 ->filter(fn (Model $row): bool => $engagehub->shouldSync($row))
                 ->map(fn (Model $row): array => $engagehub->recordPayload($row))
+                // Not a record: a logged webhook that moved no money, a payment with no amount.
+                ->filter(fn (array $payload): bool => ($payload['external_id'] ?? '') !== '')
                 ->values()
                 ->all();
 
