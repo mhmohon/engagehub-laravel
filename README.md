@@ -100,6 +100,20 @@ php artisan engagehub:sync --dry-run                        # count without send
 
 Chunked (500/request), rate-limit aware, resumable, exits non-zero if any rows were rejected.
 
+## "Sync existing data" from EngageHub
+
+Clicking **Sync existing data** on EngageHub's Integrations page runs the backfill in your app:
+
+- **Pushed (0.4+):** EngageHub calls `POST /engagehub/commands` on your app at once. The request is
+  signed with the SHA-256 of your API key, so there is nothing extra to configure; the backfill runs
+  on the queue (`ENGAGEHUB_QUEUE`), so a **queue worker** must be running. The URL is `APP_URL` +
+  `/engagehub/commands` and must be reachable from EngageHub (override with `ENGAGEHUB_COMMANDS_URL`,
+  turn off with `ENGAGEHUB_COMMANDS=false`).
+- **Polled (backup):** `engagehub:poll` runs every minute from your scheduler and picks up any
+  command the push could not deliver. Keep `schedule:run` in your cron.
+
+A command runs once, whichever way it arrives.
+
 ## Track events
 
 ```php

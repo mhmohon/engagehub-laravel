@@ -3,14 +3,16 @@
 namespace EngageHub\Laravel\Console;
 
 use EngageHub\EngageHubClient;
+use EngageHub\Laravel\CommandRunner;
 use EngageHub\Laravel\EngageHubManager;
 use Illuminate\Console\Command;
 use Throwable;
 
 /**
  * Checks in with EngageHub and runs any command left for this app, such as
- * "Sync existing data" from the Integrations page. EngageHub cannot reach into
- * your app, so it waits for this poll.
+ * "Sync existing data" from the Integrations page. When EngageHub can reach the
+ * app it pushes the command to POST /engagehub/commands at once; this poll is
+ * the backup for when it cannot (and for apps with commands turned off).
  *
  * The service provider schedules it every minute (engagehub.poll.enabled), so
  * a running `schedule:run` cron is all an app needs. `--watch` keeps polling in
@@ -61,53 +63,15 @@ class PollCommand extends Command
             return self::SUCCESS;
         }
 
-        if ($command['type'] !== 'backfill') {
+        $result = $this->laravel->make(CommandRunner::class)->run(
+            ['id' => (string) $command['id'], 'type' => (string) $command['type']],
+            $this->output,
+        );
+
+        if ($result === 'unknown') {
             $this->warn("Unknown command type \"{$command['type']}\"; update engagehub/laravel.");
-
-            return self::SUCCESS;
         }
 
-        return $this->backfill($client, (string) $command['id']);
-    }
-
-    private function backfill(EngageHubClient $client, string $commandId): int
-    {
-        // Claim it first: EngageHub clears the pending command, so an
-        // overlapping poll (another server, the next minute) won't run it twice.
-        try {
-            $client->reportSync(['command_id' => $commandId, 'status' => 'running']);
-        } catch (Throwable $e) {
-            $this->warn('Could not claim the sync (another poll may have taken it): '.$e->getMessage());
-
-            return self::SUCCESS;
-        }
-
-        $this->info('EngageHub requested a sync of existing data. Starting.');
-
-        $sync = $this->laravel->make(SyncCommand::class);
-        $sync->setLaravel($this->laravel);
-
-        try {
-            $exit = $this->runCommand($sync, [], $this->output);
-            $totals = $sync->totals();
-
-            $client->reportSync(['command_id' => $commandId, 'status' => 'done'] + $totals + [
-                'message' => $exit === self::SUCCESS ? null : 'Some records were rejected. See the request log.',
-            ]);
-
-            return $exit;
-        } catch (Throwable $e) {
-            report($e);
-
-            try {
-                $client->reportSync(['command_id' => $commandId, 'status' => 'failed', 'message' => mb_substr($e->getMessage(), 0, 1000)] + $sync->totals());
-            } catch (Throwable) {
-                // EngageHub is unreachable too; the error is already reported locally.
-            }
-
-            $this->error('Sync failed: '.$e->getMessage());
-
-            return self::FAILURE;
-        }
+        return $result === 'failed' ? self::FAILURE : self::SUCCESS;
     }
 }

@@ -63,6 +63,19 @@ return [
         'enabled' => env('ENGAGEHUB_POLL', true),
     ],
 
+    /*
+    | Pushed commands: EngageHub calls POST <url> (signed with a hash of the API
+    | key) when someone clicks "Sync existing data", so it starts at once; the
+    | backfill runs on the queue above, so a queue worker must be running.
+    | The poll stays as the backup. url defaults to APP_URL + path and must be
+    | reachable from EngageHub; set ENGAGEHUB_COMMANDS=false to stay poll-only.
+    */
+    'commands' => [
+        'enabled' => env('ENGAGEHUB_COMMANDS', true),
+        'path' => env('ENGAGEHUB_COMMANDS_PATH', 'engagehub/commands'),
+        'url' => env('ENGAGEHUB_COMMANDS_URL'),
+    ],
+
     'sync' => [
 
         /*
