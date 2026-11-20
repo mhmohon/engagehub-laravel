@@ -17,6 +17,7 @@ class ConfigMappingTest extends TestCase
                 'external_id' => 'id',
                 'map' => ['email' => 'email', 'first_name' => 'name'],
                 'attributes' => ['role'],
+                'unsubscribed' => 'unsubscribed_at',
             ],
         ]);
     }
@@ -49,5 +50,17 @@ class ConfigMappingTest extends TestCase
 
         $user->update(['role' => 'admin']);
         Queue::assertPushed(SyncContactToEngageHub::class, 2);
+    }
+
+    public function test_the_apps_opt_out_column_turns_email_consent_off(): void
+    {
+        Queue::fake();
+
+        $user = PlainUser::create(['email' => 'jane@example.com']);
+        Queue::assertPushed(SyncContactToEngageHub::class, fn ($job) => ! isset($job->contact['consent']));
+
+        $user->update(['unsubscribed_at' => now()]);
+        Queue::assertPushed(SyncContactToEngageHub::class, 2);
+        Queue::assertPushed(SyncContactToEngageHub::class, fn ($job) => ($job->contact['consent'] ?? null) === ['email' => false]);
     }
 }

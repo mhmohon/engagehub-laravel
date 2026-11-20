@@ -50,6 +50,7 @@ abstract class TestCase extends \Orchestra\Testbench\TestCase
             $table->string('email')->nullable();
             $table->string('role')->nullable();
             $table->string('plan')->nullable();
+            $table->timestamp('unsubscribed_at')->nullable();
             $table->timestamps();
         });
 

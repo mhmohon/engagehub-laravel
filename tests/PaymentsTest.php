@@ -70,6 +70,9 @@ class PaymentsTest extends TestCase
             $t->unsignedBigInteger('user_id');
             $t->unsignedBigInteger('package_id')->nullable();
             $t->timestamp('revoked_at')->nullable();
+            $t->unsignedInteger('amount_cents')->nullable();
+            $t->unsignedInteger('app_count')->nullable();
+            $t->string('status')->nullable();
             $t->timestamps();
         });
         Schema::create('hooks', function (Blueprint $t): void {
@@ -206,5 +209,29 @@ class PaymentsTest extends TestCase
         $this->app['config']->set('engagehub.sync.models.'.Hook::class.'.warriorplus.security_key', 'mapping-key');
         $this->assertSame('paid', $this->record($ipn(['WP_SECURITYKEY' => 'mapping-key']))['status']);
         $this->assertSame([], $this->record($ipn(['WP_SECURITYKEY' => 'wp-secret'])));
+    }
+
+    public function test_a_payment_can_divide_by_its_own_column_and_skip_rows_not_in_only(): void
+    {
+        $this->app['config']->set('engagehub.sync.models.'.Grant::class, [
+            'as' => 'payment',
+            'external_id' => 'order_id',
+            'contact' => 'user_id',
+            'only' => ['status' => ['paid', 'refunded']],
+            'map' => ['amount_cents' => 'amount_cents|divide:app_count', 'status' => 'status'],
+        ]);
+
+        $shared = Grant::create(['order_id' => 'B1', 'user_id' => 7, 'amount_cents' => 17900, 'app_count' => 4, 'status' => 'paid']);
+        $this->assertSame(4475, $this->record($shared)['amount_cents'], 'a 4-app bundle counts a quarter');
+
+        $alone = Grant::create(['order_id' => 'B2', 'user_id' => 7, 'amount_cents' => 6700, 'app_count' => 1, 'status' => 'paid']);
+        $this->assertSame(6700, $this->record($alone)['amount_cents'], 'a 1-app order counts in full');
+
+        Grant::create(['order_id' => 'B3', 'user_id' => 7, 'amount_cents' => 1500, 'app_count' => 1, 'status' => 'pending']);
+        $sent = fn () => Queue::pushed(SyncRecordToEngageHub::class, fn ($job) => $job->kind === 'payment')->map(fn ($job) => $job->record['external_id'])->all();
+        $this->assertSame(['B1', 'B2'], array_values($sent()), 'a pending order is not a payment');
+
+        Grant::where('order_id', 'B3')->first()->update(['status' => 'paid']);
+        $this->assertSame(['B1', 'B2', 'B3'], array_values($sent()), 'it is sent once it is paid');
     }
 }

@@ -81,6 +81,9 @@ Option 2 — config mapping (no model changes), in `config/engagehub.php`:
 ],
 ```
 
+A user who opted out of marketing in your app: `'unsubscribed' => 'marketing_opt_out'` (a flag or a date column)
+turns the contact's email consent off in EngageHub. A sync only ever takes consent away.
+
 Either way: `created`/`updated` push the contact (queued by default, with `created_at`/`updated_at`), and `deleted` tells EngageHub the user is gone, so they leave the group there (`ENGAGEHUB_ON_DELETE=delete`, the default, or `ignore`). With `SoftDeletes`, a soft delete counts as a delete and `restore()` syncs the user again. The contact row stays in EngageHub, so an unsubscribe is never forgotten.
 
 **List trait models in `engagehub.sync.models` too** (numeric entry, no mapping) so the backfill can find them:
@@ -140,7 +143,8 @@ table. Register only what your app has; every entry is config, so nothing in the
 | Key | What it does |
 | --- | --- |
 | `map` | EngageHub field => source. A source is a column, a path through relations (`plan.amount`), and optional pipes. |
-| pipes | `cents` (19.99 → 1999), `divide:n`, `multiply:n`, `prefix:x`, `upper`, `lower`. Also allowed on `external_id`. |
+| pipes | `cents` (19.99 → 1999), `divide:n`, `multiply:n`, `prefix:x`, `upper`, `lower`. `divide` / `multiply` also take a column (`amount_cents\|divide:app_count`). Also allowed on `external_id`. |
+| `only` | Sync only rows whose columns have these values: `['status' => ['paid', 'refunded']]` skips a pending order until it is paid. Works for contacts too. |
 | `values` | Your value => EngageHub's, per field (statuses, intervals). |
 | `defaults` | Fixed values for fields the table has no column for (`currency`). |
 | `contact`, `plan`, `subscription` | The column holding the other record's id, or a lookup: `['from' => column here, 'lookup' => Model::class, 'by' => column there]`. |

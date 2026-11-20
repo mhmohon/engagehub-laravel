@@ -119,6 +119,8 @@ return [
         |            ],
         |            'attributes' => ['role'],         // model attributes => attributes
         |            'watch' => ['marketing_opt_out'], // extra columns whose change re-syncs
+        |            'unsubscribed' => 'marketing_opt_out', // set (flag or date) = email consent off
+        |            'only' => ['is_active' => 1],     // sync only rows with these values
         |        ],
         |
         |    For computed values (derived attributes, consent), add

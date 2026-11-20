@@ -420,6 +420,12 @@ class EngageHubManager
 
             [$name, $argument] = explode(':', $pipe, 2) + [1 => null];
 
+            // divide:app_count / multiply:quantity: a non-numeric argument is the model's attribute.
+            if (in_array($name, ['divide', 'multiply'], true) && $argument !== null && ! is_numeric($argument)) {
+                $argument = data_get($model, $argument);
+                $argument = is_numeric($argument) ? (string) $argument : null;
+            }
+
             $value = match ($name) {
                 'cents' => is_numeric($value) ? (int) round(((float) $value) * 100) : $value,
                 'divide' => is_numeric($value) && is_numeric($argument) && (float) $argument != 0.0 ? (int) round(((float) $value) / (float) $argument) : $value,
@@ -441,6 +447,7 @@ class EngageHubManager
      *   'contact' => attribute holding the user's id, 'plan' => attribute holding the plan's id,
      *   'defaults' => [engagehub field => fixed value] for fields with no column,
      *   map sources may follow relations and take pipes: 'plan.amount|cents|divide:4',
+     *   and divide / multiply by another attribute: 'amount_cents|divide:app_count',
      *   or a lookup when the model points at it by another column:
      *   'plan' => ['from' => 'variant_id', 'lookup' => Plan::class, 'by' => 'variant_id'],
      *   'attributes' => [attribute, ...]
@@ -607,7 +614,36 @@ class EngageHubManager
 
     public function shouldSync(Model $model): bool
     {
+        if (! $this->matchesOnly($model, (array) ($this->mappingFor($model::class)['only'] ?? []))) {
+            return false;
+        }
+
         return method_exists($model, 'engageHubShouldSync') ? $model->engageHubShouldSync() : true;
+    }
+
+    /**
+     * 'only' => [attribute => value or list of values]: rows that don't match every entry are not
+     * synced (a pending order, a test row), from config instead of engageHubShouldSync().
+     *
+     * @param  array<string, mixed>  $only
+     */
+    private function matchesOnly(Model $model, array $only): bool
+    {
+        foreach ($only as $attribute => $allowed) {
+            $value = $this->value($model, (string) $attribute);
+            $value = is_bool($value) ? (int) $value : $value;
+
+            $matches = array_filter(
+                is_array($allowed) ? $allowed : [$allowed],
+                fn (mixed $want): bool => $want === null ? $value === null : $value !== null && (string) (is_bool($want) ? (int) $want : $want) === (string) $value,
+            );
+
+            if ($matches === []) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -634,6 +670,9 @@ class EngageHubManager
                 ...($mapping['attributes'] ?? []),
                 // Columns behind engageHubContactExtras(), so changing them syncs too.
                 ...($mapping['watch'] ?? []),
+                // Rows can move into 'only' (an order that gets paid) and the opt-out column.
+                ...array_map('strval', array_keys((array) ($mapping['only'] ?? []))),
+                ...(isset($mapping['unsubscribed']) ? [(string) $mapping['unsubscribed']] : []),
                 ...array_map(
                     fn (mixed $ref) => is_array($ref) ? ($ref['from'] ?? null) : $ref,
                     array_values(array_intersect_key($mapping, array_flip(['contact', 'plan', 'subscription']))),
@@ -704,6 +743,16 @@ class EngageHubManager
 
         foreach ($mapping['attributes'] ?? [] as $attribute) {
             $payload['attributes'][$attribute] = $model->getAttribute($attribute);
+        }
+
+        // 'unsubscribed' => the app's marketing opt-out column (a flag or a date): when it is set,
+        // the contact's email consent is off. A sync only takes consent away, never gives it back.
+        if (isset($mapping['unsubscribed'])) {
+            $optedOut = $model->getAttribute((string) $mapping['unsubscribed']);
+
+            if ($optedOut !== null && $optedOut !== false && $optedOut !== 0 && $optedOut !== '0' && $optedOut !== '') {
+                $payload['consent'] = ['email' => false];
+            }
         }
 
         // Computed fields a column mapping can't express (e.g. derived attributes,
