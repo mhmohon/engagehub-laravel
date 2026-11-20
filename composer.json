@@ -1,0 +1,54 @@
+{
+    "name": "engagehub/laravel",
+    "description": "Laravel bridge for the EngageHub SDK: model observers, queued sync jobs, and an engagehub:sync backfill command.",
+    "version": "0.3.0",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["engagehub", "laravel", "sdk", "sync"],
+    "require": {
+        "php": "^8.3",
+        "illuminate/console": "^10.0|^11.0|^12.0|^13.0",
+        "illuminate/database": "^10.0|^11.0|^12.0|^13.0",
+        "illuminate/queue": "^10.0|^11.0|^12.0|^13.0",
+        "illuminate/support": "^10.0|^11.0|^12.0|^13.0",
+        "engagehub/engagehub-php": "^0.3"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^9.0|^10.0|^11.0|^12.0"
+    },
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../engagehub-php",
+            "options": { "symlink": true }
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "EngageHub\\Laravel\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "EngageHub\\Laravel\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "EngageHub\\Laravel\\EngageHubServiceProvider"
+            ],
+            "aliases": {
+                "EngageHub": "EngageHub\\Laravel\\Facades\\EngageHub"
+            }
+        }
+    },
+    "scripts": {
+        "test": "phpunit"
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true,
+    "config": {
+        "sort-packages": true
+    }
+}
