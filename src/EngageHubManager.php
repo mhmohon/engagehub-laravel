@@ -406,8 +406,23 @@ class EngageHubManager
             return $value === null || $value === '' ? null : (string) $value;
         }
 
-        if (! is_array($ref) || ! isset($ref['from'], $ref['lookup']) || ! is_a($ref['lookup'], Model::class, true)) {
-            throw new InvalidArgumentException('A reference is an attribute name or [\'from\' => ..., \'lookup\' => Model::class, \'by\' => ...].');
+        $problem = match (true) {
+            ! is_array($ref) => 'it is a '.get_debug_type($ref),
+            ! isset($ref['from']) => "'from' is missing",
+            ! isset($ref['lookup']) => "'lookup' is missing",
+            ! is_string($ref['lookup']) || ! class_exists($ref['lookup']) => "'lookup' class ".(is_string($ref['lookup']) ? $ref['lookup'] : get_debug_type($ref['lookup'])).' does not exist',
+            ! is_a($ref['lookup'], Model::class, true) => "'lookup' {$ref['lookup']} is not an Eloquent model",
+            default => null,
+        };
+
+        if ($problem !== null) {
+            throw new InvalidArgumentException(sprintf(
+                'Bad reference in config/engagehub.php for %s: %s. Got %s. A reference is an attribute name, '
+                ."['from' => column, 'lookup' => Model::class, 'by' => column], or a list of those.",
+                $model::class,
+                $problem,
+                json_encode($ref, JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR) ?: get_debug_type($ref),
+            ));
         }
 
         $value = $model->getAttribute($ref['from']);

@@ -38,6 +38,9 @@ class SyncCommand extends Command
 
     private int $rejected = 0;
 
+    /** The row being turned into a payload, so a failure can say where it happened. */
+    private ?string $at = null;
+
     public function handle(EngageHubManager $engagehub): int
     {
         if (! $engagehub->enabled() && ! $this->option('dry-run')) {
@@ -102,6 +105,12 @@ class SyncCommand extends Command
         return ['created' => $this->created, 'updated' => $this->updated, 'rejected' => $this->rejected];
     }
 
+    /** Where the last run was when it stopped: "App\Models\Order, id 42", or null. */
+    public function at(): ?string
+    {
+        return $this->at;
+    }
+
     /**
      * @param  class-string<Model>  $class
      */
@@ -127,10 +136,16 @@ class SyncCommand extends Command
 
         $bar = $this->output->createProgressBar($total);
 
-        $query->orderBy($keyName)->chunkById($chunk, function (Collection $rows) use ($engagehub, $keyName, $bar, $kind): void {
+        $this->at = $class;
+
+        $query->orderBy($keyName)->chunkById($chunk, function (Collection $rows) use ($engagehub, $keyName, $bar, $kind, $class): void {
             $payloads = $rows
                 ->filter(fn (Model $row): bool => $engagehub->shouldSync($row))
-                ->map(fn (Model $row): array => $engagehub->recordPayload($row))
+                ->map(function (Model $row) use ($engagehub, $keyName, $class): array {
+                    $this->at = "{$class}, {$keyName} ".$row->getKey();
+
+                    return $engagehub->recordPayload($row);
+                })
                 // Not a record: a logged webhook that moved no money, a payment with no amount.
                 ->filter(fn (array $payload): bool => ($payload['external_id'] ?? '') !== '')
                 ->values()

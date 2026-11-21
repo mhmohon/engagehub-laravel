@@ -185,6 +185,28 @@ class RecordKindsTest extends TestCase
         }
     }
 
+    public function test_a_failed_backfill_reports_the_bad_reference_with_the_row_and_the_trace(): void
+    {
+        config(['engagehub.enabled' => false]);
+        $membership = Membership::create(['member_id' => 1, 'package_id' => 1, 'state' => 'live']);
+        config(['engagehub.enabled' => true]);
+        config(['engagehub.sync.models' => [Membership::class => ['as' => 'subscription', 'contact' => 'member_id',
+            'plan' => ['from' => 'package_id', 'lookup' => 'App\\Models\\Missing']]]]);
+
+        $this->transport->queueJson(200, ['ok' => true]); // running
+        $this->transport->queueJson(200, ['ok' => true]); // failed
+
+        $this->assertSame('failed', $this->app->make(\EngageHub\Laravel\CommandRunner::class)->run(['id' => 'cmd-9', 'type' => 'backfill']));
+
+        $failed = json_decode((string) end($this->transport->requests)['body'], true);
+        $this->assertSame('failed', $failed['status']);
+        $this->assertStringContainsString("'lookup' class App\\Models\\Missing does not exist", $failed['message']);
+        $this->assertStringContainsString(Membership::class, $failed['message']);
+        $this->assertStringContainsString('While syncing: '.Membership::class.', id '.$membership->id, $failed['details']);
+        $this->assertStringContainsString('InvalidArgumentException', $failed['details']);
+        $this->assertStringContainsString('#0 ', $failed['details']);
+    }
+
     public function test_an_unknown_kind_is_a_clear_error(): void
     {
         config(['engagehub.sync.models' => [Book::class => ['as' => 'books']]]);
