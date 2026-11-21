@@ -147,7 +147,7 @@ table. Register only what your app has; every entry is config, so nothing in the
 | `only` | Sync only rows whose columns have these values: `['status' => ['paid', 'refunded']]` skips a pending order until it is paid. Works for contacts too. |
 | `values` | Your value => EngageHub's, per field (statuses, intervals). |
 | `defaults` | Fixed values for fields the table has no column for (`currency`). |
-| `contact`, `plan`, `subscription` | The column holding the other record's id, or a lookup: `['from' => column here, 'lookup' => Model::class, 'by' => column there]`. |
+| `contact`, `plan`, `subscription` | The column holding the other record's id, or a lookup: `['from' => column here, 'lookup' => Model::class, 'by' => column there]`. A list of these is tried in order (first match wins), and `'when' => [column => value]` limits one to the rows it fits, e.g. `[['when' => ['type' => 'warriorplus'], 'from' => 'product_id', 'lookup' => Plan::class, 'by' => 'id'], ['from' => 'variant_id', 'lookup' => Plan::class, 'by' => 'variant_id']]`. |
 | `using` | Mapper class(es) for rows a column map cannot describe. The first that recognises the row wins. |
 
 Payments: without a mapped `status`, a payment is `refunded` once `refunded_at` has a value and `paid` otherwise. A

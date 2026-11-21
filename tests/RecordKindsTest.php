@@ -106,6 +106,31 @@ class RecordKindsTest extends TestCase
             && $job->record['contact'] === ['external_id' => '43'] && ! isset($job->record['plan']));
     }
 
+    public function test_a_reference_can_be_a_list_of_candidates_limited_by_when(): void
+    {
+        Queue::fake();
+        // Rows of one origin ("manual") hold the plan's id; the rest point at it by title.
+        config()->set('engagehub.sync.models.'.Membership::class.'.plan', [
+            ['when' => ['state' => 'manual'], 'from' => 'package_id', 'lookup' => Package::class, 'by' => 'id'],
+            ['from' => 'state', 'lookup' => Package::class, 'by' => 'title'],
+        ]);
+
+        $gold = Package::create(['title' => 'gold']);
+        $silver = Package::create(['title' => 'silver']);
+        Membership::create(['member_id' => 42, 'state' => 'manual', 'package_id' => $silver->id]);
+        Membership::create(['member_id' => 43, 'state' => 'gold', 'package_id' => $silver->id]);
+        Membership::create(['member_id' => 44, 'state' => 'manual', 'package_id' => 0]);
+
+        Queue::assertPushed(SyncRecordToEngageHub::class, fn ($job) => $job->kind === 'subscription'
+            && $job->record['contact'] === ['external_id' => '42'] && $job->record['plan'] === ['external_id' => (string) $silver->id]);
+        // 'when' does not match, so package_id is ignored and the title lookup wins.
+        Queue::assertPushed(SyncRecordToEngageHub::class, fn ($job) => $job->kind === 'subscription'
+            && $job->record['contact'] === ['external_id' => '43'] && $job->record['plan'] === ['external_id' => (string) $gold->id]);
+        // No candidate finds a row: no plan, never the first plan by accident.
+        Queue::assertPushed(SyncRecordToEngageHub::class, fn ($job) => $job->kind === 'subscription'
+            && $job->record['contact'] === ['external_id' => '44'] && ! isset($job->record['plan']));
+    }
+
     public function test_objects_and_plans_go_to_their_endpoints_inline(): void
     {
         config(['engagehub.dispatch' => 'sync']);

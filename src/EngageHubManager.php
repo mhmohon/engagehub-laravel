@@ -317,6 +317,12 @@ class EngageHubManager
             return null;
         }
 
+        // Compare as text: MySQL turns `varchar_col = 0` into a numeric comparison where every
+        // non-numeric string equals 0, so an integer 0 would match the first plan with a text code.
+        if (is_int($value) || is_float($value)) {
+            $value = (string) $value;
+        }
+
         return $class::query()->where($by, $value)->first();
     }
 
@@ -364,8 +370,35 @@ class EngageHubManager
      * The external id a reference points at: an attribute holding it, or a
      * lookup (['from' => column here, 'lookup' => Model::class, 'by' => column
      * there]) that finds the related row and uses its EngageHub external id.
+     *
+     * A list of references is tried in order and the first that finds a row wins; a reference with
+     * 'when' => [attribute => value or list of values] is only tried on rows that match it, for
+     * tables where rows of different origins point at the plan in different columns.
      */
     private function reference(Model $model, mixed $ref): ?string
+    {
+        $candidates = is_array($ref) && array_is_list($ref) ? $ref : [$ref];
+
+        foreach ($candidates as $candidate) {
+            if (is_array($candidate) && isset($candidate['when'])) {
+                if (! $this->matchesOnly($model, (array) $candidate['when'])) {
+                    continue;
+                }
+
+                unset($candidate['when']);
+                $candidate = $candidate['attribute'] ?? $candidate;
+            }
+
+            if (($found = $this->singleReference($model, $candidate)) !== null) {
+                return $found;
+            }
+        }
+
+        return null;
+    }
+
+    /** One reference: an attribute name, or a ['from', 'lookup', 'by'] lookup. */
+    private function singleReference(Model $model, mixed $ref): ?string
     {
         if (is_string($ref)) {
             $value = $model->getAttribute($ref);
@@ -450,6 +483,11 @@ class EngageHubManager
      *   and divide / multiply by another attribute: 'amount_cents|divide:app_count',
      *   or a lookup when the model points at it by another column:
      *   'plan' => ['from' => 'variant_id', 'lookup' => Plan::class, 'by' => 'variant_id'],
+     *   or a list tried in order, each optionally limited to some rows with 'when':
+     *   'plan' => [
+     *       ['when' => ['type' => 'warriorplus'], 'from' => 'product_id', 'lookup' => Plan::class, 'by' => 'id'],
+     *       ['from' => 'variant_id', 'lookup' => Plan::class, 'by' => 'variant_id'],
+     *   ],
      *   'attributes' => [attribute, ...]
      *
      * @param  array<string, mixed>  $mapping
