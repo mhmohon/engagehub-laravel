@@ -74,7 +74,12 @@ class CommandRunner
             report($e);
 
             try {
-                $this->client->reportSync(['command_id' => $commandId, 'status' => 'failed', 'message' => mb_substr($e->getMessage(), 0, 1000)] + $sync->totals());
+                $this->client->reportSync([
+                    'command_id' => $commandId,
+                    'status' => 'failed',
+                    'message' => mb_substr($e->getMessage(), 0, 1000),
+                    'details' => self::details($e, $sync->at()),
+                ] + $sync->totals());
             } catch (Throwable) {
                 // EngageHub is unreachable too; the error is already reported locally.
             }
@@ -82,6 +87,40 @@ class CommandRunner
             $output->writeln('<error>Sync failed: '.$e->getMessage().'</error>');
 
             return 'failed';
+        }
+    }
+
+    /**
+     * The whole failure for EngageHub's Sync log: the exception, where it was thrown, the row
+     * being synced, the SDK version and the stack trace (with causes), up to 20,000 characters.
+     */
+    public static function details(Throwable $e, ?string $at = null): string
+    {
+        $base = rtrim(base_path(), '/').'/';
+        $lines = [
+            'SDK: engagehub/laravel '.self::version().' · PHP '.PHP_VERSION.' · Laravel '.app()->version(),
+        ];
+
+        if ($at !== null) {
+            $lines[] = "While syncing: {$at}";
+        }
+
+        for ($ex = $e, $depth = 0; $ex !== null && $depth < 3; $ex = $ex->getPrevious(), $depth++) {
+            $lines[] = '';
+            $lines[] = ($depth > 0 ? 'Caused by ' : '').$ex::class.': '.$ex->getMessage();
+            $lines[] = 'at '.str_replace($base, '', $ex->getFile()).':'.$ex->getLine();
+            $lines[] = str_replace($base, '', $ex->getTraceAsString());
+        }
+
+        return mb_substr(implode("\n", $lines), 0, 20000);
+    }
+
+    private static function version(): string
+    {
+        try {
+            return \Composer\InstalledVersions::getPrettyVersion('engagehub/laravel') ?? 'unknown';
+        } catch (Throwable) {
+            return 'unknown';
         }
     }
 }

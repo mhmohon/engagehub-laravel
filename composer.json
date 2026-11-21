@@ -1,7 +1,7 @@
 {
     "name": "engagehub/laravel",
     "description": "Laravel bridge for the EngageHub SDK: model observers, queued sync jobs, and an engagehub:sync backfill command.",
-    "version": "0.5.3",
+    "version": "0.5.4",
     "type": "library",
     "license": "MIT",
     "keywords": ["engagehub", "laravel", "sdk", "sync"],
